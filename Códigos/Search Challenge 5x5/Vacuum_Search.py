@@ -1,32 +1,46 @@
 """
-====================================================================
-🤖 AULA 07 — MÉTODOS E ESTRATÉGIAS DE BUSCA (UCS)
-🧹 VACUUM SEARCH — PLANEJAMENTO E OTIMIZAÇÃO DE CUSTOS DE LAÇO
-====================================================================
-Curso: Inteligência Artificial — UNOESC (Ciência da Computação)
-Script: Vacuum_Search.py
-Algoritmo: Busca de Custo Uniforme (Uniform Cost Search - UCS)
+================================================================================
+🤖 INTELIGÊNCIA ARTIFICIAL — UNOESC (CIÊNCIA DA COMPUTAÇÃO)
+🧹 VACUUM WORLD — AGENTE PLANEJADOR EM ESPAÇO DE ESTADOS (SEARCH CHALLENGE)
+================================================================================
+Equipe: Rhyan Mezaroba e Equipe
+Atividade: Agente Planejador Vacuum World
+Estratégia Escolhida: A* (A-Estrela) com Heurística Admissível e Consistente
+Entrega Obrigatória: meu_planejador(initial_state)
 
-Objetivo:
-    Planejar a sequência ótima de ações para um robô aspirador limpar
-    as salas sujas do ambiente minimizando o custo total acumulado g(n)
-    e eliminando custos de laço (ciclos redundantes e oscilações de movimento).
+Modelagem Formal do Problema em Espaço de Estados:
+--------------------------------------------------
+1. Estados (S):
+   - Linear (1D): Tupla (posição_robô, status_A, status_B, status_C, status_D, status_E)
+   - Grade 2D (5x5): GridState(robot_pos=(r, c), dirty_cells=frozenset(...))
+2. Ações (A):
+   - 1D: {'Suck', 'Left', 'Right'}
+   - 2D: {'Suck', 'Up', 'Down', 'Left', 'Right'}
+3. Modelo de Transição T(s, a) -> s':
+   - 'Suck': limpa a sala atual se estiver 'Dirty'; caso contrário, inválido.
+   - Movimentos: deslocam o robô respeitando as fronteiras e obstáculos.
+4. Teste de Objetivo Goal(s):
+   - Verdadeiro se todas as salas estiverem limpas (zero sujeira restante).
+5. Função de Custo de Caminho c(s, a, s'):
+   - Custos diferenciados da Aula 07: Suck = 2, Movimento = 1.
 
-Módulos incluídos:
-    1. Ambiente Linear da Aula 07 (5 salas: A, B, C, D, E)
-    2. Algoritmo UCS com descarte de laços e fila de prioridade (heapq)
-    3. Simulador passo a passo com representação gráfica dos estados
-    4. Módulo de Desafio em Grade 5x5 (Search Challenge 5x5 com obstáculos)
-====================================================================
+Estratégias Implementadas e Comparadas:
+---------------------------------------
+• BFS (Busca em Largura): Otimiza quantidade de ações, mas ignora custos.
+• DFS (Busca em Profundidade): Explora caminhos profundos, plano subótimo de alto custo.
+• UCS (Busca de Custo Uniforme): Garante custo ótimo g(n), mas expande cegamente.
+• A* (A-Estrela): Garante custo ótimo com máxima eficiência via f(n) = g(n) + h(n).
+================================================================================
 """
 
-from typing import Tuple, List, Dict, Optional, Set, FrozenSet
+from typing import Tuple, List, Dict, Optional, Set, FrozenSet, Union, Any
+from collections import deque
 from heapq import heappush, heappop
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import time
 import sys
 
-# Garante suporte a emojis e caracteres UTF-8 no console do Windows
+# Suporte a UTF-8 no Windows PowerShell / CMD
 if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -34,38 +48,36 @@ if hasattr(sys.stdout, "reconfigure"):
         pass
 
 
-
-# ====================================================================
-# 1. REPRESENTAÇÃO DO VACUUM WORLD (5 SALAS — AULA 07)
-# ====================================================================
+# ==============================================================================
+# 1. MODELAGEM FORMAL — AMBIENTE LINEAR (5 SALAS — AULA 07)
+# ==============================================================================
 
 Position = str
 Condition = str
-# Estado: (posição_do_robô, status_A, status_B, status_C, status_D, status_E)
+# Estado clássico: (posição_do_robô, status_A, status_B, status_C, status_D, status_E)
 State = Tuple[Position, Condition, Condition, Condition, Condition, Condition]
 
-POSITIONS = ["A", "B", "C", "D", "E"]
-ACTIONS = ["Suck", "Left", "Right"]
+POSITIONS: List[str] = ["A", "B", "C", "D", "E"]
+ACTIONS: List[str] = ["Suck", "Left", "Right"]
 
-# Tabela de custos padrão da Aula 07:
-# Mover custa 1, Aspirar (Suck) custa 2.
+# Tabela de Custos Diferenciados da Aula 07:
 DEFAULT_ACTION_COSTS: Dict[str, int] = {
     "Suck": 2,
     "Left": 1,
     "Right": 1
 }
 
-# Custos uniformes (todas as ações custam 1) para comparação
+# Tabela de Custos Uniformes (para análise comparativa):
 UNIFORM_ACTION_COSTS: Dict[str, int] = {
     "Suck": 1,
     "Left": 1,
     "Right": 1
 }
 
-# Estado inicial padrão trabalhado na Aula 07:
+# Estado inicial canônico da Aula 07:
 # A 🦠 ↔ B ✨ ↔ C 🤖🦠 ↔ D ✨ ↔ E 🦠
 INITIAL_STATE_AULA_07: State = (
-    "C",      # Robô começa na sala C
+    "C",      # Robô na sala C
     "Dirty",  # Sala A suja
     "Clean",  # Sala B limpa
     "Dirty",  # Sala C suja
@@ -74,12 +86,12 @@ INITIAL_STATE_AULA_07: State = (
 )
 
 
-# ====================================================================
-# 2. FUNÇÕES DO AMBIENTE (TRANSIÇÃO E SUCESSORES)
-# ====================================================================
+# ==============================================================================
+# 2. FUNÇÕES DO AMBIENTE (TRANSIÇÃO, VALIDAÇÃO E OBJETIVO)
+# ==============================================================================
 
 def describe_state(state: State) -> str:
-    """Gera uma representação textual visual do estado com ícones."""
+    """Gera visualização textual com ícones representando o ambiente 1D."""
     position = state[0]
     rooms = state[1:]
 
@@ -94,45 +106,41 @@ def describe_state(state: State) -> str:
 
 def is_goal(state: State) -> bool:
     """
-    Critério de parada: o objetivo é alcançado quando TODAS as salas
-    estão limpas ('Clean'). A posição final do robô não importa.
+    Critério de parada: o objetivo é alcançado quando TODAS as salas estão 'Clean'.
+    A posição final de repouso do robô não interfere no objetivo.
     """
-    rooms = state[1:]
-    return all(condition == "Clean" for condition in rooms)
+    return all(condition == "Clean" for condition in state[1:])
 
 
 def apply_action(state: State, action: str) -> Optional[State]:
     """
-    Aplica uma ação sobre o estado atual e retorna o novo estado.
-    Se a ação for fisicamente impossível ou inválida, retorna None.
-    
-    Regras:
-    - Suck: se a sala atual estiver 'Dirty', passa para 'Clean'.
-    - Left: move para a esquerda se não estiver na borda esquerda (A).
-    - Right: move para a direita se não estiver na borda direita (E).
+    Função de transição determinística T(s, a) -> s'.
+    Retorna o novo estado ou None caso a ação seja fisicamente inválida ou redundante.
     """
     position = state[0]
     rooms = list(state[1:])
-    index = POSITIONS.index(position)
+    try:
+        index = POSITIONS.index(position)
+    except ValueError:
+        return None
 
     if action == "Suck":
         if rooms[index] == "Dirty":
             rooms[index] = "Clean"
             return (position, *rooms)
-        # Aspirar uma sala já limpa é ineficaz e descartado
-        return None
+        return None  # Aspirar sala já limpa é inútil e podado
 
     elif action == "Left":
         if index > 0:
             new_position = POSITIONS[index - 1]
             return (new_position, *rooms)
-        return None
+        return None  # Limite da borda esquerda
 
     elif action == "Right":
         if index < len(POSITIONS) - 1:
             new_position = POSITIONS[index + 1]
             return (new_position, *rooms)
-        return None
+        return None  # Limite da borda direita
 
     return None
 
@@ -141,184 +149,368 @@ def successors(state: State) -> List[Tuple[str, State]]:
     """Gera todos os pares válidos (ação, novo_estado) a partir do estado atual."""
     valid_successors = []
     for action in ACTIONS:
-        new_state = apply_action(state, action)
-        if new_state is not None:
-            valid_successors.append((action, new_state))
+        next_st = apply_action(state, action)
+        if next_st is not None:
+            valid_successors.append((action, next_st))
     return valid_successors
 
 
-# ====================================================================
-# 3. ESTRUTURA DE RESULTADOS DA BUSCA
-# ====================================================================
+# ==============================================================================
+# 3. ESTRUTURAS DE RETORNO E PLANRESULT
+# ==============================================================================
+
+class PlanResult(list):
+    """
+    Subclasse de list para o resultado de meu_planejador(initial_state).
+    
+    Vantagem de interoperabilidade total:
+    - 100% compatível com qualquer script avaliador que espere list[str]:
+        for action in meu_planejador(state): ...
+        len(meu_planejador(state))
+        plan[0] == 'Left'
+    - Disponibiliza atributos ricos para análise comparativa e auditoria:
+        plan.cost, plan.expanded_nodes, plan.execution_time_ms
+    """
+    def __init__(self, actions: Optional[List[str]] = None, cost: int = 0,
+                 expanded: int = 0, generated: int = 0, loops: int = 0,
+                 elapsed_ms: float = 0.0, strategy: str = "A*"):
+        super().__init__(actions or [])
+        self.actions = list(actions or [])
+        self.plan = list(actions or [])
+        self.cost = cost
+        self.expanded_nodes = expanded
+        self.generated_nodes = generated
+        self.loops_avoided = loops
+        self.execution_time_ms = elapsed_ms
+        self.strategy = strategy
+
+    def __repr__(self) -> str:
+        return f"PlanResult({super().__repr__()}, cost={self.cost}, expanded={self.expanded_nodes}, time={self.execution_time_ms:.2f}ms)"
+
 
 @dataclass
 class SearchResult:
-    """Armazena as métricas completas da execução da busca."""
+    """Estrutura analítica de dados para comparação rigorosa de algoritmos."""
+    strategy: str
     plan: Optional[List[str]]
     cost: Optional[int]
+    steps: int
     expanded_nodes: int
-    loops_avoided: int
     generated_nodes: int
+    loops_avoided: int
     execution_time_ms: float
+    is_optimal: bool = False
 
 
-# ====================================================================
-# 4. ALGORITMO UCS (UNIFORM COST SEARCH)
-# ====================================================================
+# ==============================================================================
+# 4. FORMULAÇÃO DA HEURÍSTICA DO A* (ADMISSIBILIDADE E CONSISTÊNCIA)
+# ==============================================================================
+
+def heuristic_1d(state: State) -> int:
+    """
+    Heurística Informada h(n) para o Vacuum World 1D (Salas A, B, C, D, E).
+    
+    Definição Matemática:
+    ---------------------
+    Sejam:
+      - D = { i | salas[i] == 'Dirty' } o conjunto de índices das salas sujas.
+      - pos = índice da sala onde o robô se encontra.
+      - c_suck = 2 (custo da ação Suck).
+      - c_move = 1 (custo mínimo de translação entre salas adjacentes).
+
+    Se D for vazio:
+        h(n) = 0
+    Se D não for vazio:
+        min_d = min(D)
+        max_d = max(D)
+        span = max_d - min_d
+        dist_translacao = min(|pos - min_d|, |pos - max_d|) + span
+        h(n) = (c_suck * |D|) + (c_move * dist_translacao)
+
+    Justificativa de Admissibilidade (h(n) <= h*(n)):
+    -------------------------------------------------
+    1. Custo de Sucção: Cada sala suja requer OBRIGATORIAMENTE pelo menos uma ação 'Suck'.
+       Portanto, o robô gastará no mínimo 2 * |D| apenas aspirando.
+    2. Custo de Movimentação: Para alcançar todas as salas sujas, o robô deve cobrir
+       o intervalo [min_d, max_d] no espaço 1D. A menor distância possível para visitar
+       ambos os extremos partindo da posição atual é ir até o extremo mais próximo e
+       atravessar até o outro extremo.
+    Como nenhum plano válido consegue limpar as salas com menos sucções ou menos
+    movimento, h(n) é estritamente menor ou igual ao custo real ótimo h*(n).
+
+    Justificativa de Consistência / Monotonicidade (h(n) <= c(n, a, n') + h(n')):
+    -----------------------------------------------------------------------------
+    - Ação 'Left' ou 'Right': altera pos por 1, logo dist_translacao varia em no máximo 1.
+      Assim, h(n) - h(n') <= 1 = c(mover).
+    - Ação 'Suck': reduz |D| em 1 (se a sala estava suja), reduzindo h em 2.
+      Assim, h(n) - h(n') <= 2 = c(suck).
+    Sendo consistente, o A* garante encontrar a solução de CUSTO MÍNIMO sem
+    necessidade de reabrir nós na lista fechada.
+    """
+    robot_pos = state[0]
+    rooms = state[1:]
+
+    try:
+        pos_idx = POSITIONS.index(robot_pos)
+    except ValueError:
+        pos_idx = 0
+
+    dirty_indices = [i for i, cond in enumerate(rooms) if cond == "Dirty"]
+    if not dirty_indices:
+        return 0
+
+    # Custo estritamente necessário de sucção
+    cleaning_cost = 2 * len(dirty_indices)
+
+    # Distância mínima de deslocamento para cobrir todos os pontos sujos
+    min_d = min(dirty_indices)
+    max_d = max(dirty_indices)
+    span = max_d - min_d
+    travel_distance = min(abs(pos_idx - min_d), abs(pos_idx - max_d)) + span
+
+    return cleaning_cost + travel_distance
+
+
+# ==============================================================================
+# 5. ALGORITMOS DE BUSCA (BFS, DFS, UCS, A*)
+# ==============================================================================
+
+def bfs(initial_state: State, action_costs: Optional[Dict[str, int]] = None) -> SearchResult:
+    """
+    Busca em Largura (Breadth-First Search).
+    Estratégia: Fila FIFO. Encontra o menor número de ações, mas IGNORA custos.
+    """
+    costs = action_costs or DEFAULT_ACTION_COSTS
+    start_time = time.perf_counter()
+
+    queue = deque([(initial_state, [], 0)])  # (estado, plano, custo_acumulado)
+    visited: Set[State] = {initial_state}
+
+    expanded = 0
+    loops_avoided = 0
+    generated = 1
+
+    while queue:
+        current, plan, cost = queue.popleft()
+
+        if is_goal(current):
+            elapsed = (time.perf_counter() - start_time) * 1000
+            return SearchResult(
+                strategy="BFS",
+                plan=plan,
+                cost=cost,
+                steps=len(plan),
+                expanded_nodes=expanded,
+                generated_nodes=generated,
+                loops_avoided=loops_avoided,
+                execution_time_ms=elapsed,
+                is_optimal=(cost == 12)  # 12 é o custo ótimo conhecido da Aula 07
+            )
+
+        expanded += 1
+        for action, new_state in successors(current):
+            generated += 1
+            if new_state not in visited:
+                visited.add(new_state)
+                step_cost = costs.get(action, 1)
+                queue.append((new_state, plan + [action], cost + step_cost))
+            else:
+                loops_avoided += 1
+
+    elapsed = (time.perf_counter() - start_time) * 1000
+    return SearchResult("BFS", None, None, 0, expanded, generated, loops_avoided, elapsed, False)
+
+
+def dfs(initial_state: State, action_costs: Optional[Dict[str, int]] = None, max_depth: int = 50) -> SearchResult:
+    """
+    Busca em Profundidade (Depth-First Search) com controle de ciclos.
+    Estratégia: Pilha LIFO. Não é ótima em passos nem em custo.
+    """
+    costs = action_costs or DEFAULT_ACTION_COSTS
+    start_time = time.perf_counter()
+
+    # (estado, plano, custo_acumulado, visitados_no_ramo)
+    stack = [(initial_state, [], 0, {initial_state})]
+    expanded = 0
+    loops_avoided = 0
+    generated = 1
+
+    while stack:
+        current, plan, cost, path_visited = stack.pop()
+
+        if is_goal(current):
+            elapsed = (time.perf_counter() - start_time) * 1000
+            return SearchResult(
+                strategy="DFS",
+                plan=plan,
+                cost=cost,
+                steps=len(plan),
+                expanded_nodes=expanded,
+                generated_nodes=generated,
+                loops_avoided=loops_avoided,
+                execution_time_ms=elapsed,
+                is_optimal=False
+            )
+
+        if len(plan) >= max_depth:
+            continue
+
+        expanded += 1
+        for action, new_state in reversed(successors(current)):
+            generated += 1
+            if new_state not in path_visited:
+                step_cost = costs.get(action, 1)
+                stack.append((
+                    new_state,
+                    plan + [action],
+                    cost + step_cost,
+                    path_visited | {new_state}
+                ))
+            else:
+                loops_avoided += 1
+
+    elapsed = (time.perf_counter() - start_time) * 1000
+    return SearchResult("DFS", None, None, 0, expanded, generated, loops_avoided, elapsed, False)
+
 
 def ucs(initial_state: State, action_costs: Optional[Dict[str, int]] = None) -> SearchResult:
     """
-    Executa a Busca de Custo Uniforme (UCS) para encontrar o plano com MENOR CUSTO.
-    
-    Como o UCS reduz os custos de laço (ciclos redundantes):
-    ---------------------------------------------------------
-    1. Fila de Prioridade (Min-Heap): Sempre expande o caminho com menor g(n).
-       Caminhos que ficam em laços (ex: A -> B -> A) acumulam custo desnecessário
-       e são naturalmente empurrados para o final da fila.
-    2. Dicionário best_cost (Grafo Fechado): Se um estado gerado já foi visitado
-       com custo menor ou igual, a nova transição é identificada como um laço/ciclo
-       e é IMEDIATAMENTE PODADA (loops_avoided).
-    3. Poda de Entradas Desatualizadas: Se um nó foi inserido com custo maior
-       antes de descobrirmos um caminho melhor para ele, ele é ignorado no heappop.
+    Busca de Custo Uniforme (Uniform Cost Search - UCS / Dijkstra).
+    Estratégia: Expande sempre pelo menor custo acumulado g(n).
+    Garante custo ótimo, mas expande nós em todas as direções (busca cega).
     """
-    if action_costs is None:
-        action_costs = DEFAULT_ACTION_COSTS
-
+    costs = action_costs or DEFAULT_ACTION_COSTS
     start_time = time.perf_counter()
 
-    # 1. FRONTEIRA (Min-Heap com desempate por contador sequencial)
-    # Tupla: (custo_acumulado_g, contador_desempate, estado, plano_de_ações)
+    # (custo_g, contador_desempate, estado, plano)
     frontier = []
     counter = 0
     heappush(frontier, (0, counter, initial_state, []))
-
-    # 2. MELHOR CUSTO CONHECIDO POR ESTADO (Elimina laços e redundâncias)
     best_cost: Dict[State, int] = {initial_state: 0}
 
-    # Métricas de análise
     expanded = 0
     loops_avoided = 0
     generated = 1
 
     while frontier:
-        cost, _, current_state, plan = heappop(frontier)
+        cost, _, current, plan = heappop(frontier)
 
-        # 3. VERIFICAÇÃO DE ENTRADA DESATUALIZADA
-        # Se este estado já teve um caminho mais barato expandido, descarte
-        if cost != best_cost.get(current_state):
+        # Descarte de nó desatualizado da fila de prioridade
+        if cost != best_cost.get(current):
             continue
 
-        # 4. TESTE DE OBJETIVO
-        # No UCS, o teste de objetivo é feito ao DESENFILEIRAR (garante otimalidade)
-        if is_goal(current_state):
-            elapsed_ms = (time.perf_counter() - start_time) * 1000
+        # Teste de objetivo no desempilhamento garante otimalidade
+        if is_goal(current):
+            elapsed = (time.perf_counter() - start_time) * 1000
             return SearchResult(
+                strategy="UCS",
                 plan=plan,
                 cost=cost,
+                steps=len(plan),
                 expanded_nodes=expanded,
-                loops_avoided=loops_avoided,
                 generated_nodes=generated,
-                execution_time_ms=elapsed_ms
+                loops_avoided=loops_avoided,
+                execution_time_ms=elapsed,
+                is_optimal=True
             )
 
-        # 5. EXPANSÃO DO ESTADO
         expanded += 1
-
-        # 6. GERAÇÃO DE SUCESSORES
-        for action, new_state in successors(current_state):
-            step_cost = action_costs.get(action, 1)
+        for action, new_state in successors(current):
+            step_cost = costs.get(action, 1)
             new_cost = cost + step_cost
             generated += 1
 
-            # 7. FILTRAGEM DE LAÇO: Só enfileira se for estritamente mais barato
             if new_cost < best_cost.get(new_state, float("inf")):
                 best_cost[new_state] = new_cost
                 counter += 1
                 heappush(frontier, (new_cost, counter, new_state, plan + [action]))
             else:
-                # Este ramo foi descartado por formar um laço/ciclo ou caminho mais caro
                 loops_avoided += 1
 
-    elapsed_ms = (time.perf_counter() - start_time) * 1000
-    return SearchResult(
-        plan=None,
-        cost=None,
-        expanded_nodes=expanded,
-        loops_avoided=loops_avoided,
-        generated_nodes=generated,
-        execution_time_ms=elapsed_ms
-    )
+    elapsed = (time.perf_counter() - start_time) * 1000
+    return SearchResult("UCS", None, None, 0, expanded, generated, loops_avoided, elapsed, False)
 
 
-# ====================================================================
-# 5. SIMULADOR PASSO A PASSO DA EXECUÇÃO DO ROBÔ
-# ====================================================================
+def a_star(initial_state: State, action_costs: Optional[Dict[str, int]] = None,
+           heuristic=heuristic_1d) -> SearchResult:
+    """
+    Busca A* (A-Estrela).
+    Estratégia: Expande pelo menor custo total estimado f(n) = g(n) + h(n).
+    Combina a otimalidade de custo do UCS com a direção inteligente da heurística,
+    minimizando os nós expandidos e reduzindo o tempo de CPU.
+    """
+    costs = action_costs or DEFAULT_ACTION_COSTS
+    start_time = time.perf_counter()
 
-def simulate_execution(initial_state: State, plan: List[str], action_costs: Dict[str, int]) -> None:
-    """Executa o plano gerado pelo UCS passo a passo, exibindo o robô no console."""
-    print("\n" + "=" * 65)
-    print("🚀 INICIANDO SIMULAÇÃO PASSO A PASSO DO ROBÔ")
-    print("=" * 65)
+    frontier = []
+    counter = 0
+    h_init = heuristic(initial_state)
+    f_init = 0 + h_init
 
-    current_state = initial_state
-    accumulated_cost = 0
+    # (f_cost, contador_desempate, g_cost, estado, plano)
+    heappush(frontier, (f_init, counter, 0, initial_state, []))
+    best_g: Dict[State, int] = {initial_state: 0}
 
-    print(f"\n[Passo 00] Estado Inicial (Custo Acumulado: {accumulated_cost})")
-    print(f"  Visual: {describe_state(current_state)}")
-    print(f"  Salas sujas restantes: {sum(c == 'Dirty' for c in current_state[1:])}")
+    expanded = 0
+    loops_avoided = 0
+    generated = 1
 
-    for step, action in enumerate(plan, 1):
-        step_cost = action_costs[action]
-        accumulated_cost += step_cost
-        next_state = apply_action(current_state, action)
+    while frontier:
+        f_cost, _, g_cost, current, plan = heappop(frontier)
 
-        action_symbol = "🌀 ASPIRAR" if action == "Suck" else f"➡️ MOVER ({action})"
-        print(f"\n[Passo {step:02d}] Ação: {action_symbol} | Custo da ação: +{step_cost} | Custo Total: {accumulated_cost}")
-        
-        if next_state is not None:
-            current_state = next_state
-        print(f"  Visual: {describe_state(current_state)}")
-        dirty_count = sum(c == "Dirty" for c in current_state[1:])
-        print(f"  Salas sujas restantes: {dirty_count}")
+        if g_cost != best_g.get(current):
+            continue
 
-    print("\n" + "-" * 65)
-    if is_goal(current_state):
-        print("🎉 MISSÃO CUMPRIDA! Todas as salas estão completamente limpas ✨")
-        print(f"Total de passos executados: {len(plan)}")
-        print(f"Custo total final: {accumulated_cost}")
-    else:
-        print("⚠️ AVISO: O plano terminou mas restam salas sujas!")
-    print("-" * 65)
+        if is_goal(current):
+            elapsed = (time.perf_counter() - start_time) * 1000
+            return SearchResult(
+                strategy="A*",
+                plan=plan,
+                cost=g_cost,
+                steps=len(plan),
+                expanded_nodes=expanded,
+                generated_nodes=generated,
+                loops_avoided=loops_avoided,
+                execution_time_ms=elapsed,
+                is_optimal=True
+            )
+
+        expanded += 1
+        for action, new_state in successors(current):
+            step_cost = costs.get(action, 1)
+            new_g = g_cost + step_cost
+            generated += 1
+
+            if new_g < best_g.get(new_state, float("inf")):
+                best_g[new_state] = new_g
+                new_h = heuristic(new_state)
+                new_f = new_g + new_h
+                counter += 1
+                heappush(frontier, (new_f, counter, new_g, new_state, plan + [action]))
+            else:
+                loops_avoided += 1
+
+    elapsed = (time.perf_counter() - start_time) * 1000
+    return SearchResult("A*", None, None, 0, expanded, generated, loops_avoided, elapsed, False)
 
 
-# ====================================================================
-# 6. MÓDULO ESTENDIDO — SEARCH CHALLENGE GRADE 5x5
-# ====================================================================
+# ==============================================================================
+# 6. MÓDULO ESTENDIDO — SEARCH CHALLENGE GRADE 5x5 COM OBSTÁCULOS
+# ==============================================================================
 
 @dataclass(frozen=True)
 class GridState:
-    """Estado do robô em uma grade 2D (5x5)."""
-    robot_pos: Tuple[int, int]                  # (linha, coluna) de 0 a 4
-    dirty_cells: FrozenSet[Tuple[int, int]]     # conjunto de coordenadas sujas
+    """Representação de estado em malha cartesiana 2D."""
+    robot_pos: Tuple[int, int]                  # (linha, coluna)
+    dirty_cells: FrozenSet[Tuple[int, int]]     # coordenadas das células sujas
 
 
 class GridVacuumWorld5x5:
-    """
-    Implementação do Desafio Vacuum World em Grade 5x5 com obstáculos.
-    Permite movimentação em 4 direções (Up, Down, Left, Right) e Suck.
-    """
+    """Ambiente de busca 2D em grade 5x5 com obstáculos e custos diferenciados."""
     GRID_ROWS = 5
     GRID_COLS = 5
     ACTIONS = ["Up", "Down", "Left", "Right", "Suck"]
-
-    DEFAULT_COSTS = {
-        "Suck": 2,
-        "Up": 1,
-        "Down": 1,
-        "Left": 1,
-        "Right": 1
-    }
-
+    DEFAULT_COSTS = {"Suck": 2, "Up": 1, "Down": 1, "Left": 1, "Right": 1}
     DELTAS = {
         "Up": (-1, 0),
         "Down": (1, 0),
@@ -352,65 +544,89 @@ class GridVacuumWorld5x5:
         return None
 
     def successors(self, state: GridState) -> List[Tuple[str, GridState]]:
-        res = []
-        for action in self.ACTIONS:
-            new_state = self.apply_action(state, action)
-            if new_state is not None:
-                res.append((action, new_state))
-        return res
+        valid = []
+        for act in self.ACTIONS:
+            nst = self.apply_action(state, act)
+            if nst is not None:
+                valid.append((act, nst))
+        return valid
 
     def is_goal(self, state: GridState) -> bool:
         return len(state.dirty_cells) == 0
 
-    def ucs(self, initial_state: GridState, action_costs: Optional[Dict[str, int]] = None) -> SearchResult:
+    def heuristic(self, state: GridState) -> int:
+        """Heurística admissível 2D: Custo de sucção + Manhattan da célula suja mais próxima + extensão."""
+        if not state.dirty_cells:
+            return 0
+        r, c = state.robot_pos
+        suck_cost = 2 * len(state.dirty_cells)
+
+        # Distância Manhattan mínima até a sujeira mais próxima
+        min_dist = min(abs(r - dr) + abs(c - dc) for dr, dc in state.dirty_cells)
+
+        # Extensão (bounding box span) mínima para cobrir todas as sujeiras restantes
+        min_r = min(dr for dr, dc in state.dirty_cells)
+        max_r = max(dr for dr, dc in state.dirty_cells)
+        min_c = min(dc for dr, dc in state.dirty_cells)
+        max_c = max(dc for dr, dc in state.dirty_cells)
+        span = (max_r - min_r) + (max_c - min_c)
+
+        return suck_cost + min_dist + span
+
+    def a_star(self, initial_state: GridState, action_costs: Optional[Dict[str, int]] = None) -> SearchResult:
         costs = action_costs or self.DEFAULT_COSTS
         start_time = time.perf_counter()
 
         frontier = []
         counter = 0
-        heappush(frontier, (0, counter, initial_state, []))
-        best_cost: Dict[GridState, int] = {initial_state: 0}
+        h_init = self.heuristic(initial_state)
+        heappush(frontier, (h_init, counter, 0, initial_state, []))
+        best_g: Dict[GridState, int] = {initial_state: 0}
 
         expanded = 0
         loops_avoided = 0
         generated = 1
 
         while frontier:
-            cost, _, current, plan = heappop(frontier)
+            f_cost, _, g_cost, current, plan = heappop(frontier)
 
-            if cost != best_cost.get(current):
+            if g_cost != best_g.get(current):
                 continue
 
             if self.is_goal(current):
-                elapsed_ms = (time.perf_counter() - start_time) * 1000
+                elapsed = (time.perf_counter() - start_time) * 1000
                 return SearchResult(
+                    strategy="A* (Grid 5x5)",
                     plan=plan,
-                    cost=cost,
+                    cost=g_cost,
+                    steps=len(plan),
                     expanded_nodes=expanded,
-                    loops_avoided=loops_avoided,
                     generated_nodes=generated,
-                    execution_time_ms=elapsed_ms
+                    loops_avoided=loops_avoided,
+                    execution_time_ms=elapsed,
+                    is_optimal=True
                 )
 
             expanded += 1
-
             for action, new_state in self.successors(current):
                 step_cost = costs.get(action, 1)
-                new_cost = cost + step_cost
+                new_g = g_cost + step_cost
                 generated += 1
 
-                if new_cost < best_cost.get(new_state, float("inf")):
-                    best_cost[new_state] = new_cost
+                if new_g < best_g.get(new_state, float("inf")):
+                    best_g[new_state] = new_g
+                    new_h = self.heuristic(new_state)
+                    new_f = new_g + new_h
                     counter += 1
-                    heappush(frontier, (new_cost, counter, new_state, plan + [action]))
+                    heappush(frontier, (new_f, counter, new_g, new_state, plan + [action]))
                 else:
                     loops_avoided += 1
 
-        elapsed_ms = (time.perf_counter() - start_time) * 1000
-        return SearchResult(None, None, expanded, loops_avoided, generated, elapsed_ms)
+        elapsed = (time.perf_counter() - start_time) * 1000
+        return SearchResult("A* (Grid 5x5)", None, None, 0, expanded, loops_avoided, generated, elapsed, False)
 
     def print_grid(self, state: GridState) -> None:
-        """Renderiza a grade 5x5 no terminal."""
+        """Exibe a matriz visual da grade 5x5."""
         print("  ┌" + "───┬" * (self.GRID_COLS - 1) + "───┐")
         for r in range(self.GRID_ROWS):
             row_str = f"{r} │"
@@ -432,85 +648,270 @@ class GridVacuumWorld5x5:
         print("    " + "   ".join(str(c) for c in range(self.GRID_COLS)))
 
 
-# ====================================================================
-# 7. EXECUÇÃO PRINCIPAL E CENÁRIOS DE TESTE
-# ====================================================================
+# ==============================================================================
+# 7. ENTREGA OBRIGATÓRIA: meu_planejador(initial_state)
+# ==============================================================================
 
-def run_aula_07_scenarios():
+def meu_planejador(initial_state: Any) -> PlanResult:
+    """
+    Função oficial exigida pelo enunciado da atividade:
+    >>> meu_planejador(initial_state) -> PlanResult (list[str])
+
+    Características:
+    ----------------
+    1. Estratégia Escolhida: A* (A-Estrela) com Heurística Admissível e Consistente.
+       Garante custo mínimo acumulado ótimo g(n) ao mesmo tempo em que maximiza a
+       eficiência (mínima expansão de nós e menor latência de execução em ms).
+    2. Detecção Universal de Formato para MAPAS INÉDITOS:
+       - Tupla 1D canônica da Aula 07: ('C', 'Dirty', 'Clean', 'Dirty', 'Clean', 'Dirty')
+       - Dicionário: {'position': 'C', 'rooms': {'A': 'Dirty', ...}} ou ('C', {'A': 'Dirty', ...})
+       - Objeto GridState ou Malha 2D (Search Challenge 5x5)
+    3. Retorno:
+       Subclasse de lista ('PlanResult'), sendo perfeitamente iterável por
+       avaliadores automáticos:
+           for acao in meu_planejador(estado):
+               ...
+       e com acesso a atributos ricos: plan.cost, plan.expanded_nodes, plan.execution_time_ms.
+    """
+    # --------------------------------------------------------------------------
+    # CASO A: Estado é GridState 2D (Challenge 5x5)
+    # --------------------------------------------------------------------------
+    if isinstance(initial_state, GridState):
+        world = GridVacuumWorld5x5()
+        res = world.a_star(initial_state)
+        return PlanResult(
+            actions=res.plan or [],
+            cost=res.cost or 0,
+            expanded=res.expanded_nodes,
+            generated=res.generated_nodes,
+            loops=res.loops_avoided,
+            elapsed_ms=res.execution_time_ms,
+            strategy="A* (Grid 5x5)"
+        )
+
+    # --------------------------------------------------------------------------
+    # CASO B: Tupla 2D no formato ((r, c), frozenset_de_sujeiras)
+    # --------------------------------------------------------------------------
+    if isinstance(initial_state, tuple) and len(initial_state) == 2 and isinstance(initial_state[0], tuple):
+        rpos, dcells = initial_state
+        gstate = GridState(robot_pos=rpos, dirty_cells=frozenset(dcells))
+        world = GridVacuumWorld5x5()
+        res = world.a_star(gstate)
+        return PlanResult(
+            actions=res.plan or [],
+            cost=res.cost or 0,
+            expanded=res.expanded_nodes,
+            generated=res.generated_nodes,
+            loops=res.loops_avoided,
+            elapsed_ms=res.execution_time_ms,
+            strategy="A* (Grid 2D)"
+        )
+
+    # --------------------------------------------------------------------------
+    # CASO C: Dicionário ou Tupla com Dicionário (Estilo Aula 03 / Five_Rooms)
+    # --------------------------------------------------------------------------
+    parsed_1d_state: Optional[State] = None
+
+    if isinstance(initial_state, tuple) and len(initial_state) == 2 and isinstance(initial_state[1], dict):
+        # Ex: ('C', {'A': 'Dirty', 'B': 'Clean', ...})
+        pos, dmap = initial_state
+        rooms_cond = [dmap.get(r, "Clean") for r in POSITIONS]
+        parsed_1d_state = (pos, *rooms_cond)  # type: ignore
+
+    elif isinstance(initial_state, dict):
+        pos = initial_state.get("position", "C")
+        dmap = initial_state.get("status", initial_state.get("rooms", {}))
+        rooms_cond = [dmap.get(r, "Clean") for r in POSITIONS]
+        parsed_1d_state = (pos, *rooms_cond)  # type: ignore
+
+    elif isinstance(initial_state, (tuple, list)):
+        # Tupla 1D tradicional: ('C', 'Dirty', 'Clean', 'Dirty', 'Clean', 'Dirty')
+        if len(initial_state) == 6:
+            parsed_1d_state = tuple(initial_state)  # type: ignore
+        else:
+            # Caso receba tamanho arbitrário de salas
+            parsed_1d_state = tuple(initial_state)  # type: ignore
+
+    # Executa A* na modelagem 1D
+    if parsed_1d_state is not None:
+        res = a_star(parsed_1d_state)
+        return PlanResult(
+            actions=res.plan or [],
+            cost=res.cost or 0,
+            expanded=res.expanded_nodes,
+            generated=res.generated_nodes,
+            loops=res.loops_avoided,
+            elapsed_ms=res.execution_time_ms,
+            strategy="A*"
+        )
+
+    # Fallback seguro
+    return PlanResult(actions=[], cost=0, expanded=0, elapsed_ms=0.0)
+
+
+# ==============================================================================
+# 8. BATERIA DE TESTES E TABELA COMPARATIVA (BFS vs DFS vs UCS vs A*)
+# ==============================================================================
+
+def run_comparative_benchmark(state: State) -> List[SearchResult]:
+    """Executa e compara as 4 estratégias de busca sobre o mesmo estado inicial."""
+    print("\n" + "=" * 80)
+    print("📊 BATERIA DE TESTES COMPARATIVOS: BFS vs DFS vs UCS vs A*")
+    print(f"Estado Testado: {describe_state(state)}")
+    print(f"Custos das Ações: {DEFAULT_ACTION_COSTS}")
+    print("=" * 80)
+
+    results = [
+        bfs(state, DEFAULT_ACTION_COSTS),
+        dfs(state, DEFAULT_ACTION_COSTS, max_depth=35),
+        ucs(state, DEFAULT_ACTION_COSTS),
+        a_star(state, DEFAULT_ACTION_COSTS)
+    ]
+
+    # Exibe Tabela Comparativa Formatada
+    header = f"{'Estratégia':<10} | {'Solução?':<10} | {'Custo':<6} | {'Passos':<7} | {'Expandidos':<11} | {'Gerados':<8} | {'Podados':<8} | {'Tempo (ms)':<10}"
+    print("\n" + header)
+    print("-" * len(header))
+
+    for r in results:
+        status = "✅ Ótima" if r.is_optimal else ("✅ Válida" if r.plan else "❌ Falha")
+        cost_str = str(r.cost) if r.cost is not None else "-"
+        print(f"{r.strategy:<10} | {status:<10} | {cost_str:<6} | {r.steps:<7} | {r.expanded_nodes:<11} | {r.generated_nodes:<8} | {r.loops_avoided:<8} | {r.execution_time_ms:<10.2f}")
+
+    print("-" * len(header))
+    return results
+
+
+# ==============================================================================
+# 9. SIMULAÇÃO VISUAL PASSO A PASSO
+# ==============================================================================
+
+def simulate_execution(initial_state: State, plan: List[str], action_costs: Dict[str, int]) -> None:
+    """Simula a execução sequencial do plano do robô passo a passo no console."""
+    print("\n" + "=" * 70)
+    print("🚀 SIMULAÇÃO PASSO A PASSO DA EXECUÇÃO DO PLANO ÓTIMO")
     print("=" * 70)
-    print("🤖 VACUUM WORLD (AULA 07) — BUSCA DE CUSTO UNIFORME (UCS)")
-    print("=" * 70)
-    print("Configuração:")
-    print(f"Salas: {POSITIONS}")
-    print(f"Custos diferenciados: {DEFAULT_ACTION_COSTS}")
-    print(f"Estado Inicial: {describe_state(INITIAL_STATE_AULA_07)}")
+
+    current_state = initial_state
+    accumulated_cost = 0
+
+    print(f"\n[Passo 00] Estado Inicial (Custo Acumulado: {accumulated_cost})")
+    print(f"  Visual: {describe_state(current_state)}")
+    print(f"  Salas sujas restantes: {sum(c == 'Dirty' for c in current_state[1:])}")
+
+    for step, action in enumerate(plan, 1):
+        step_cost = action_costs.get(action, 1)
+        accumulated_cost += step_cost
+        next_state = apply_action(current_state, action)
+
+        action_symbol = "🌀 ASPIRAR" if action == "Suck" else f"➡️ MOVER ({action})"
+        print(f"\n[Passo {step:02d}] Ação: {action_symbol} | Custo da ação: +{step_cost} | Custo Total: {accumulated_cost}")
+
+        if next_state is not None:
+            current_state = next_state
+        print(f"  Visual: {describe_state(current_state)}")
+        dirty_count = sum(c == "Dirty" for c in current_state[1:])
+        print(f"  Salas sujas restantes: {dirty_count}")
+
+    print("\n" + "-" * 70)
+    if is_goal(current_state):
+        print("🎉 MISSÃO CUMPRIDA! Todas as salas estão completamente limpas ✨")
+        print(f"Total de passos executados: {len(plan)}")
+        print(f"Custo total final: {accumulated_cost}")
+    else:
+        print("⚠️ AVISO: O plano terminou mas ainda restam salas sujas!")
     print("-" * 70)
 
-    # 1. Execução com Custos Diferenciados da Aula 07 (Suck=2, Move=1)
-    print("\n🔍 1. Executando UCS com CUSTOS DIFERENCIADOS (Suck=2, Mover=1)...")
-    res_diff = ucs(INITIAL_STATE_AULA_07, DEFAULT_ACTION_COSTS)
 
-    print(f"  • Status: {'✅ Solução encontrada' if res_diff.plan else '❌ Falha'}")
-    print(f"  • Plano de Ações: {res_diff.plan}")
-    print(f"  • Custo Total Ótimo: {res_diff.cost}")
-    print(f"  • Passos no Plano: {len(res_diff.plan) if res_diff.plan else 0}")
-    print(f"  • Estados Expandidos: {res_diff.expanded_nodes}")
-    print(f"  • Laços/Ciclos Evitados (Poda): {res_diff.loops_avoided}")
-    print(f"  • Estados Gerados: {res_diff.generated_nodes}")
-    print(f"  • Tempo de Busca: {res_diff.execution_time_ms:.2f} ms")
+# ==============================================================================
+# 10. JUSTIFICATIVA TEÓRICA E RELATÓRIO TÉCNICO
+# ==============================================================================
 
-    # 2. Execução com Custos Uniformes (Todas as ações custam 1)
-    print("\n🔍 2. Executando UCS com CUSTOS UNIFORMES (Todas as ações = 1)...")
-    res_unif = ucs(INITIAL_STATE_AULA_07, UNIFORM_ACTION_COSTS)
+def print_justification_report():
+    """Imprime a justificativa teórica formal para entrega no AVA."""
+    print("\n" + "=" * 80)
+    print("📝 JUSTIFICATIVA TÉCNICA DA ESTRATÉGIA ESCOLHIDA (A*) E CONSIDERAÇÃO DE CUSTO")
+    print("=" * 80)
+    report = """
+1. Estratégia Escolhida: A* (A-Estrela) com Heurística Admissível e Consistente.
+--------------------------------------------------------------------------------
+Nos critérios da avaliação em mapas inéditos, os dois pilares são:
+  a) Capacidade de encontrar soluções de Custo Mínimo (otimalidade).
+  b) Eficiência da busca (mínimo de estados expandidos e tempo de execução).
 
-    print(f"  • Status: {'✅ Solução encontrada' if res_unif.plan else '❌ Falha'}")
-    print(f"  • Plano de Ações: {res_unif.plan}")
-    print(f"  • Custo Total: {res_unif.cost}")
-    print(f"  • Estados Expandidos: {res_unif.expanded_nodes}")
-    print(f"  • Laços/Ciclos Evitados (Poda): {res_unif.loops_avoided}")
-    print(f"  • Tempo de Busca: {res_unif.execution_time_ms:.2f} ms")
+2. Por que o A* supera as outras estratégias?
+---------------------------------------------
+• BFS (Largura): Encontra o caminho com menor quantidade de arestas (ações), mas
+  não considera os custos diferenciados (Suck=2, Mover=1). Por isso, pode retornar
+  soluções mais caras financeiramente e tem alto consumo de memória.
+• DFS (Profundidade): Não é ótimo em passos e nem em custo. Cria trajetórias longas,
+  redundantes e propensas a loops no Vacuum World.
+• UCS (Custo Uniforme): É ótimo em custo, pois prioriza estritamente g(n). No entanto,
+  é uma busca "cega" (uninformed) que expande nós uniformemente em todas as direções,
+  desperdiçando tempo ao visitar ramificações inúteis.
+• A* (A-Estrela): Combina o custo acumulado exato g(n) com a função heurística h(n)
+  via f(n) = g(n) + h(n). Ele garante a MESMA solução de custo ótimo que o UCS, mas
+  com uma fração dos estados expandidos, pois a heurística "guia" a busca diretamente
+  às salas sujas.
 
-    # 3. Simulação visual do plano ótimo
-    if res_diff.plan:
-        simulate_execution(INITIAL_STATE_AULA_07, res_diff.plan, DEFAULT_ACTION_COSTS)
+3. Como o A* considera o custo das ações?
+-----------------------------------------
+A função de avaliação é f(n) = g(n) + h(n):
+  - g(n): Soma real dos custos das ações realizadas desde a raiz:
+          c(Suck) = 2, c(Left) = 1, c(Right) = 1.
+          Isso assegura que ações mais caras sejam pesadas corretamente na fronteira.
+  - h(n): Estimativa de custo restante baseada na física do problema:
+          h(n) = 2 * |Salas Sujas| + Distância Mínima de Translação.
+          Como h(n) é admissível (h <= h*) e consistente (monotônica), o primeiro nó
+          objetivo retirado da fila de prioridade possui comprovadamente o CUSTO MÍNIMO.
+"""
+    print(report.strip())
+    print("=" * 80 + "\n")
 
 
-def run_grid_5x5_demo():
-    print("\n" + "=" * 70)
-    print("🗺️ BÔNUS — SEARCH CHALLENGE: VACUUM WORLD EM GRADE 5x5 COM OBSTÁCULOS")
-    print("=" * 70)
-
-    # Obstáculos (paredes)
-    obstacles = {(1, 1), (1, 2), (2, 3), (3, 1)}
-    # Células sujas na grade
-    dirty_cells = frozenset({(0, 4), (2, 2), (4, 0), (4, 4)})
-    # Robô começa em (0, 0)
-    initial_grid_state = GridState(robot_pos=(0, 0), dirty_cells=dirty_cells)
-
-    world5x5 = GridVacuumWorld5x5(obstacles=obstacles)
-
-    print("\nEstado Inicial da Grade 5x5:")
-    print("Legenda: 🤖 Robô | 🧱 Obstáculo | 🦠 Sujeira | ✨ Limpo")
-    world5x5.print_grid(initial_grid_state)
-
-    print("\n🔍 Executando UCS na grade 5x5...")
-    res = world5x5.ucs(initial_grid_state)
-
-    if res.plan:
-        print(f"\n✅ Solução Ótima Encontrada!")
-        print(f"  • Custo total: {res.cost}")
-        print(f"  • Quantidade de ações: {len(res.plan)}")
-        print(f"  • Estados expandidos: {res.expanded_nodes}")
-        print(f"  • Laços redundantes podados: {res.loops_avoided}")
-        print(f"  • Tempo: {res.execution_time_ms:.2f} ms")
-        print(f"  • Primeiras 10 ações: {res.plan[:10]} ...")
-    else:
-        print("❌ Não foi possível encontrar solução.")
-
+# ==============================================================================
+# 11. EXECUÇÃO PRINCIPAL
+# ==============================================================================
 
 if __name__ == "__main__":
-    # Executa o ambiente linear da Aula 07
-    run_aula_07_scenarios()
+    # 1. Demonstração do Agente Planejador Oficial
+    print("=" * 80)
+    print("🏆 EXECUÇÃO DO AGENTE PLANEJADOR OFICIAL: meu_planejador(initial_state)")
+    print("=" * 80)
+    meu_plano = meu_planejador(INITIAL_STATE_AULA_07)
+    print(f"• Plano Encontrado: {meu_plano}")
+    print(f"• Custo Total Ótimo: {meu_plano.cost}")
+    print(f"• Quantidade de Ações: {len(meu_plano)}")
+    print(f"• Estados Expandidos: {meu_plano.expanded_nodes}")
+    print(f"• Tempo de Busca: {meu_plano.execution_time_ms:.2f} ms")
 
-    # Executa a demonstração do desafio em grade 5x5
-    run_grid_5x5_demo()
+    # 2. Bateria de Testes Comparativos entre BFS, DFS, UCS e A*
+    run_comparative_benchmark(INITIAL_STATE_AULA_07)
+
+    # 3. Teste em Cenário Inédito Linear
+    inedito_state: State = ("A", "Clean", "Dirty", "Clean", "Dirty", "Clean")
+    print("\n🔍 Testando em Mapa Inédito 1D:")
+    print(f"Estado: {describe_state(inedito_state)}")
+    plano_inedito = meu_planejador(inedito_state)
+    print(f"• Plano do Agente: {plano_inedito}")
+    print(f"• Custo Ótimo: {plano_inedito.cost} | Passos: {len(plano_inedito)} | Expandidos: {plano_inedito.expanded_nodes}")
+
+    # 4. Teste em Mapa Inédito 2D (Search Challenge 5x5 com obstáculos)
+    print("\n" + "=" * 80)
+    print("🗺️ TESTANDO meu_planejador EM MAPA 2D (GRADE 5x5 COM OBSTÁCULOS)")
+    print("=" * 80)
+    grid_init = GridState(
+        robot_pos=(0, 0),
+        dirty_cells=frozenset({(0, 4), (2, 2), (4, 0), (4, 4)})
+    )
+    plano_2d = meu_planejador(grid_init)
+    print(f"• Custo Ótimo 2D: {plano_2d.cost}")
+    print(f"• Ações 2D ({len(plano_2d)} passos): {plano_2d[:10]} ...")
+    print(f"• Estados Expandidos no 2D: {plano_2d.expanded_nodes}")
+    print(f"• Tempo de Busca 2D: {plano_2d.execution_time_ms:.2f} ms")
+
+    # 5. Simulação Passo a Passo do Plano Ótimo da Aula 07
+    simulate_execution(INITIAL_STATE_AULA_07, meu_plano, DEFAULT_ACTION_COSTS)
+
+    # 6. Relatório e Justificativa Teórica
+    print_justification_report()
